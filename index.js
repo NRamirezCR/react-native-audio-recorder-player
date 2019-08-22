@@ -5,6 +5,7 @@ import {
   NativeEventEmitter,
   Platform,
 } from 'react-native';
+import { EventEmitter } from 'fbemitter';
 
 const { RNAudioRecorderPlayer } = NativeModules;
 
@@ -12,12 +13,59 @@ const pad = (num) => {
   return ('0' + num).slice(-2);
 };
 
+const emitter = () => {
+  if (Platform.OS === 'android') return DeviceEventEmitter;
+  return new NativeEventEmitter(RNAudioRecorderPlayer);
+};
+
 class AudioRecorderPlayer {
-  static _isRecording;
-  static _isPlaying;
-  static _recorderSubscription;
-  static _playerSubscription;
-  static _recordInterval;
+  _currentPosition;
+  _duration;
+
+  _emitter;
+
+  _isRecording;
+  _isPlaying;
+
+  _recorderSubscription;
+  _playerSubscription;
+
+  constructor({ uri } = {}) {
+    this._uri = uri || 'DEFAULT';
+    this._emitter = new EventEmitter();
+  }
+
+  _setNativeRecordBackListener = () => {
+    this._recorderSubscription = emitter().addListener('rn-recordback', (e) => {
+      if (!this.isRecording) return;
+      this._emitter.emit('recordback', e);
+    });
+  }
+
+  _unsetNativeRecordBackListener = () => {
+    if (this._recorderSubscription) {
+      this._recorderSubscription.remove();
+      this._recorderSubscription = null;
+    }
+  }
+
+  _setNativePlayBackListener = () => {
+    this._playerSubscription = emitter().addListener('rn-playback', ({ current_position, duration }) => { // eslint-disable-line camelcase
+      if (!this.isPlaying) return;
+      this._currentPosition = parseFloat(current_position);
+      this._duration = parseFloat(duration);
+      this._emitter.emit('playback', { current_position, duration });
+
+      if (current_position === duration) this.stopPlayer(); // eslint-disable-line camelcase
+    });
+  }
+
+  _unsetNativePlayBackListener = () => {
+    if (this._playerSubscription) {
+      this._playerSubscription.remove();
+      this._playerSubscription = null;
+    }
+  }
 
   mmss = (secs) => {
     let minutes = Math.floor(secs / 60);
@@ -42,13 +90,9 @@ class AudioRecorderPlayer {
    * set listerner from native module for recorder.
    * @returns {callBack(e: Event)}
    */
-  addRecordBackListener = (e: Event) => {
-    if (Platform.OS === 'android') {
-      this._recorderSubscription = DeviceEventEmitter.addListener('rn-recordback', e);
-    } else {
-      const myModuleEvt = new NativeEventEmitter(RNAudioRecorderPlayer);
-      this._recorderSubscription = myModuleEvt.addListener('rn-recordback', e);
-    }
+  addRecordBackListener = (cb) => {
+    const sub = this._emitter.addListener('recordback', cb);
+    return () => sub.remove();
   }
 
   /**
@@ -56,23 +100,16 @@ class AudioRecorderPlayer {
    * @returns {void}
    */
   removeRecordBackListener = () => {
-    if (this._recorderSubscription) {
-      this._recorderSubscription.remove();
-      this._recorderSubscription = null;
-    }
+    this._emitter.removeAllListeners('recordback');
   }
 
   /**
    * set listener from native module for player.
    * @returns {callBack(e: Event)}
    */
-  addPlayBackListener = (e: Event) => {
-    if (Platform.OS === 'android') {
-      this._playerSubscription = DeviceEventEmitter.addListener('rn-playback', e);
-    } else {
-      const myModuleEvt = new NativeEventEmitter(RNAudioRecorderPlayer);
-      this._playerSubscription = myModuleEvt.addListener('rn-playback', e);
-    }
+  addPlayBackListener = (cb) => {
+    const sub = this._emitter.addListener('playback', cb);
+    return () => sub.remove();
   }
 
   /**
@@ -80,10 +117,24 @@ class AudioRecorderPlayer {
    * @returns {void}
    */
   removePlayBackListener = () => {
-    if (this._playerSubscription) {
-      this._playerSubscription.remove();
-      this._playerSubscription = null;
-    }
+    this._emitter.removeAllListeners('playback');
+  }
+
+  /**
+   * set listener from native module for player.
+   * @returns {callBack(e: Event)}
+   */
+  addPlayBackEndListener = (cb) => {
+    const sub = this._emitter.addListener('playback-end', cb);
+    return () => sub.remove();
+  }
+
+  /**
+   * remove listener for player.
+   * @returns {void}
+   */
+  removePlayBackEndListener = () => {
+    this._emitter.removeAllListeners('playback-end');
   }
 
   /**
@@ -91,13 +142,11 @@ class AudioRecorderPlayer {
    * @param {string} uri audio uri.
    * @returns {Promise<string>}
    */
-  startRecorder = async(uri) => {
-    if (!uri) {
-      uri = 'DEFAULT';
-    }
+  startRecorder = async() => {
     if (!this._isRecording) {
       this._isRecording = true;
-      return RNAudioRecorderPlayer.startRecorder(uri);
+      this._setNativeRecordBackListener();
+      return RNAudioRecorderPlayer.startRecorder(this._uri);
     }
     console.log('Already recording');
   }
@@ -109,6 +158,7 @@ class AudioRecorderPlayer {
   stopRecorder = async() => {
     if (this._isRecording) {
       this._isRecording = false;
+      this._unsetNativeRecordBackListener();
       return RNAudioRecorderPlayer.stopRecorder();
     }
     console.log('Already stopped recording');
@@ -121,6 +171,7 @@ class AudioRecorderPlayer {
   resumePlayer = async() => {
     if (!this._isPlaying) {
       this._isPlaying = true;
+      this._setNativePlayBackListener();
       return RNAudioRecorderPlayer.resumePlayer();
     }
     console.log('Already playing');
@@ -131,13 +182,11 @@ class AudioRecorderPlayer {
    * @param {string} uri audio uri.
    * @returns {Promise<string>}
    */
-  startPlayer = async(uri) => {
-    if (!uri) {
-      uri = 'DEFAULT';
-    }
+  startPlayer = async() => {
     if (!this._isPlaying) {
       this._isPlaying = true;
-      return RNAudioRecorderPlayer.startPlayer(uri);
+      this._setNativePlayBackListener();
+      return RNAudioRecorderPlayer.startPlayer(this._uri);
     }
     console.log('Already started playing');
   }
@@ -148,7 +197,10 @@ class AudioRecorderPlayer {
    */
   stopPlayer = async() => {
     if (this._isPlaying) {
+      this._currentPosition = 0;
       this._isPlaying = false;
+      this._unsetNativePlayBackListener();
+      this._emitter.emit('playback-end');
       return RNAudioRecorderPlayer.stopPlayer();
     }
     console.log('Already stopped playing');
@@ -161,7 +213,8 @@ class AudioRecorderPlayer {
   pausePlayer = async() => {
     if (this._isPlaying) {
       this._isPlaying = false;
-      return RNAudioRecorderPlayer.pausePlayer();
+      this._unsetNativePlayBackListener();
+      return RNAudioRecorderPlayer.stopPlayer();
     }
     console.log('Already paused or stopped');
   }
@@ -171,7 +224,7 @@ class AudioRecorderPlayer {
    * @param {number} time position seek to in second.
    * @returns {Promise<string>}
    */
-  seekToPlayer = async(time: number) => {
+  seekToPlayer = async(time) => {
     if (Platform.OS === 'ios') {
       time = time / 1000;
     }
@@ -183,7 +236,7 @@ class AudioRecorderPlayer {
    * @param {number} setVolume set volume.
    * @returns {Promise<string>}
    */
-  setVolume = async(volume: number) => {
+  setVolume = async(volume) => {
     if (volume < 0 || volume > 1) {
       return console.warn('Value of volume should be between 0.0 to 1.0');
     }
@@ -197,6 +250,14 @@ class AudioRecorderPlayer {
    */
   setSubscriptionDuration = async(sec) => {
     return RNAudioRecorderPlayer.setSubscriptionDuration(sec);
+  }
+
+  get isPlaying() {
+    return this._isPlaying;
+  }
+
+  get isRecording() {
+    return this._isRecording;
   }
 }
 

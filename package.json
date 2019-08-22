@@ -28,7 +28,8 @@
     "react-native": ">=0.60.0"
   },
   "dependencies": {
-    "dooboolab-welcome": "^1.1.0"
+    "dooboolab-welcome": "^1.0.5",
+    "fbemitter": "^2.1.1"
   },
   "devDependencies": {
     "babel-eslint": "^10.0.1",
